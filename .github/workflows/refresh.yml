@@ -1,0 +1,49 @@
+name: Refresh data
+
+on:
+  schedule:
+    # Runs every 4 hours at minute 10 (10 min after 4H bar close)
+    # UTC times: 00:10, 04:10, 08:10, 12:10, 16:10, 20:10
+    - cron: '10 */4 * * *'
+  workflow_dispatch:  # allows manual trigger from GitHub UI
+
+permissions:
+  contents: write  # needed to push commits back to the repo
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Refresh data from Coinglass
+        env:
+          COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
+          VCP_DATA_DIR: data/clean
+        run: python refresh_data.py
+
+      - name: Commit and push if data changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/clean/
+          if git diff --staged --quiet; then
+            echo "No data changes — nothing to commit."
+          else
+            git commit -m "auto: refresh 4H data $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
