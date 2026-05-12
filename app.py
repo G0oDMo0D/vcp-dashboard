@@ -19,12 +19,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from engine import scan_all, compute_indicators, CFG
 from universe import UNIVERSE, SECTORS
+from heatmap import render_sector_heatmap
+from history import save_snapshot, render_history
 
 # ============================================================
 # Configuration
 # ============================================================
 DATA_DIR = os.environ.get("VCP_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "clean"))
 RESULTS_DIR = os.environ.get("VCP_RESULTS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"))
+SNAPSHOTS_DIR = os.environ.get("VCP_SNAPSHOTS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "snapshots"))
 
 st.set_page_config(
     page_title="VCP-EMA-Stack Dashboard",
@@ -411,6 +414,13 @@ def main():
     with st.spinner("Computing signals..."):
         scan_df, regime = run_scan()
 
+    # Write snapshot for history tracking (one per unique 4H bar, idempotent)
+    try:
+        save_snapshot(scan_df, regime, SNAPSHOTS_DIR)
+    except Exception as e:
+        # Never let snapshot write break the dashboard
+        st.sidebar.caption(f"⚠ Snapshot write failed: {type(e).__name__}")
+
     # Header & regime
     render_header(regime)
     st.divider()
@@ -441,10 +451,16 @@ def main():
 
     # Tier summary
     render_tier_summary(scan_df, regime["active"])
+
+    # Sector heatmap (new)
+    st.divider()
+    st.subheader("Sector heat — where setups are concentrated")
+    render_sector_heatmap(scan_df, UNIVERSE)
+
     st.divider()
 
-    # Tabs
-    tab1, tab2, tab3 = st.tabs(["📋 Watchlist", "🔍 Symbol detail", "📊 Backtest"])
+    # Tabs (Watchlist + Symbol detail + History + Backtest)
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Watchlist", "🔍 Symbol detail", "📜 History", "📊 Backtest"])
 
     with tab1:
         df_view = render_watchlist(scan_df, sector_filter, tier_filter, min_score)
@@ -470,6 +486,9 @@ def main():
             st.info("No symbols available.")
 
     with tab3:
+        render_history(SNAPSHOTS_DIR, DATA_DIR, UNIVERSE)
+
+    with tab4:
         render_equity()
 
 
