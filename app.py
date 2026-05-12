@@ -21,6 +21,7 @@ from engine import scan_all, compute_indicators, CFG
 from universe import UNIVERSE, SECTORS
 from heatmap import render_sector_heatmap
 from history import save_snapshot, render_history
+from symbol_backtest import render_symbol_backtest
 
 # ============================================================
 # Configuration
@@ -418,21 +419,19 @@ def main():
     try:
         save_snapshot(scan_df, regime, SNAPSHOTS_DIR)
     except Exception as e:
-        # Never let snapshot write break the dashboard
         st.sidebar.caption(f"⚠ Snapshot write failed: {type(e).__name__}")
 
-    # Header & regime
+    # Header & regime (always visible at the top)
     render_header(regime)
-    st.divider()
 
-    # Sidebar filters
+    # Sidebar filters (always visible, used by Watchlist tab)
     with st.sidebar:
         st.header("Filters")
         sector_filter = st.multiselect(
             "Sector",
             options=SECTORS,
             default=[],
-            help="Empty = all sectors",
+            help="Empty = all sectors. Affects the Watchlist tab.",
         )
         tier_filter = st.multiselect(
             "Tier",
@@ -449,47 +448,76 @@ def main():
             age = (datetime.now(regime["as_of"].tz) - regime["as_of"]).total_seconds() / 3600
             st.caption(f"Data age: {age:.1f}h")
 
-    # Tier summary
-    render_tier_summary(scan_df, regime["active"])
-
-    # Sector heatmap (new)
-    st.divider()
-    st.subheader("Sector heat — where setups are concentrated")
-    render_sector_heatmap(scan_df, UNIVERSE)
-
     st.divider()
 
-    # Tabs (Watchlist + Symbol detail + History + Backtest)
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Watchlist", "🔍 Symbol detail", "📜 History", "📊 Backtest"])
+    # ============================================================
+    # Three top-level tabs
+    # ============================================================
+    top1, top2, top3 = st.tabs([
+        "📋 Watchlist & Scan",
+        "🔬 Strategy backtest",
+        "🔥 Sector signals heatmap",
+    ])
 
-    with tab1:
-        df_view = render_watchlist(scan_df, sector_filter, tier_filter, min_score)
-        if df_view is not None:
-            st.caption(f"Showing {len(df_view)} of {len(scan_df)} evaluated symbols. "
-                       "Glyphs: ✓ pass · · fail. Sort by clicking column headers.")
+    # ------------------------------------------------------------
+    # TAB 1 — Watchlist & Scan (current functionality)
+    # ------------------------------------------------------------
+    with top1:
+        # Tier summary cards
+        render_tier_summary(scan_df, regime["active"])
+        st.divider()
 
-    with tab2:
-        # Symbol picker — show actionable candidates first
-        sorted_df = scan_df.sort_values(["symbol_pass", "F1_base_60d"], ascending=[False, False])
-        options = sorted_df["symbol"].tolist()
-        if options:
-            display_options = [f"{UNIVERSE.get(s,(s,'?'))[0]} ({s}) — {r['tier']}, {r['symbol_pass']}/7"
-                              for s, r in zip(options, sorted_df.to_dict("records"))]
-            choice = st.selectbox("Select symbol for detail view",
-                                  range(len(options)),
-                                  format_func=lambda i: display_options[i],
-                                  index=0)
-            sym = options[choice]
-            row = scan_df[scan_df["symbol"] == sym].iloc[0]
-            render_symbol_detail(sym, row)
-        else:
-            st.info("No symbols available.")
+        # Inner tabs for the watchlist content
+        inner1, inner2, inner3 = st.tabs(["📋 Watchlist", "🔍 Symbol detail", "📊 Portfolio backtest"])
 
-    with tab3:
+        with inner1:
+            df_view = render_watchlist(scan_df, sector_filter, tier_filter, min_score)
+            if df_view is not None:
+                st.caption(
+                    f"Showing {len(df_view)} of {len(scan_df)} evaluated symbols. "
+                    "Glyphs: ✓ pass · · fail. Sort by clicking column headers."
+                )
+
+        with inner2:
+            sorted_df = scan_df.sort_values(["symbol_pass", "F1_base_60d"],
+                                             ascending=[False, False])
+            options = sorted_df["symbol"].tolist()
+            if options:
+                display_options = [
+                    f"{UNIVERSE.get(s,(s,'?'))[0]} ({s}) — {r['tier']}, {r['symbol_pass']}/7"
+                    for s, r in zip(options, sorted_df.to_dict("records"))
+                ]
+                choice = st.selectbox(
+                    "Select symbol for detail view",
+                    range(len(options)),
+                    format_func=lambda i: display_options[i],
+                    index=0,
+                )
+                sym = options[choice]
+                row = scan_df[scan_df["symbol"] == sym].iloc[0]
+                render_symbol_detail(sym, row)
+            else:
+                st.info("No symbols available.")
+
+        with inner3:
+            render_equity()
+
+    # ------------------------------------------------------------
+    # TAB 2 — Strategy backtest (per-symbol historical)
+    # ------------------------------------------------------------
+    with top2:
+        st.subheader("Strategy backtest — single symbol, full history")
+        render_symbol_backtest(DATA_DIR, UNIVERSE)
+
+    # ------------------------------------------------------------
+    # TAB 3 — Sector signals heatmap + history
+    # ------------------------------------------------------------
+    with top3:
+        st.subheader("Sector heat — where setups are concentrated right now")
+        render_sector_heatmap(scan_df, UNIVERSE)
+        st.divider()
+        st.subheader("📜 Signal history")
         render_history(SNAPSHOTS_DIR, DATA_DIR, UNIVERSE)
-
-    with tab4:
-        render_equity()
 
 
 if __name__ == "__main__" or True:  # streamlit runs scripts top-level
