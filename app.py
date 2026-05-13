@@ -1,4 +1,4 @@
-="""
+"""
 VCP-EMA-Stack Dashboard
 
 Web UI for monitoring strategy signals across the configured universe.
