@@ -107,7 +107,8 @@ def load_backtest_trades():
 # ============================================================
 # Header / Regime
 # ============================================================
-def render_header(regime: dict):
+def render_title(regime: dict):
+    """Top-of-page title + refresh button. Always visible regardless of tab."""
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("📈 VCP-EMA-Stack Dashboard")
@@ -119,16 +120,19 @@ def render_header(regime: dict):
             load_symbol_data.clear()
             st.rerun()
 
+
+def render_vcp_regime(regime: dict):
+    """VCP strategy regime banner + 4 metric columns. Placed inside VCP tabs only."""
     active = regime["active"]
     if active:
-        st.success("✅ STRATEGY ACTIVE — both regime gates satisfied. Tier-A signals are tradable.")
+        st.success("✅ REVERSAL STRATEGY ACTIVE — both regime gates satisfied. Tier-A signals are tradable.")
     else:
         reasons = []
         if not regime["F3_active"]:
             reasons.append(f"F3 fail (BTC {regime['btc_above_pct']:+.2%} vs ≥+5%)")
         if not regime["F4_active"]:
             reasons.append(f"F4 fail (BTC 30d {regime['btc_30d_ret']:+.2%} vs ≥+5%)")
-        st.warning(f"⏸ STRATEGY PAUSED — {' AND '.join(reasons)}. Tier-A symbols stay on watchlist.")
+        st.warning(f"⏸ REVERSAL STRATEGY PAUSED — {' AND '.join(reasons)}. Tier-A symbols stay on watchlist.")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("BTC price", f"${regime['btc_price']:,.0f}")
@@ -145,6 +149,12 @@ def render_header(regime: dict):
         delta=f"{(regime['btc_30d_ret']-0.05)*100:+.1f}pp vs +5% gate",
         delta_color="normal",
     )
+
+
+# Keep render_header as alias for backwards compat — calls both
+def render_header(regime: dict):
+    render_title(regime)
+    render_vcp_regime(regime)
 
 
 # ============================================================
@@ -433,14 +443,14 @@ def render_strategy_b1_tab():
     if b1_regime.get("regime_active"):
         days = b1_regime.get("days_since_local_high", 0)
         st.success(
-            f"✅ **B1 STRATEGY ACTIVE** — BTC made new 90d local high "
+            f"✅ **TREND STRATEGY ACTIVE** — BTC made new 90d local high "
             f"{days:.1f} days ago. Tier-A signals are tradable."
         )
     else:
         days = b1_regime.get("days_since_local_high", 0)
         dd = b1_regime.get("btc_dd_from_local_high", 0)
         st.warning(
-            f"⏸ **B1 STRATEGY PAUSED** — BTC last 90d local high was "
+            f"⏸ **TREND STRATEGY PAUSED** — BTC last 90d local high was "
             f"**{days:.0f} days** ago (need ≤7). Currently {dd:+.1%} from local high. "
             f"Setups stay on watchlist but don't trigger entries."
         )
@@ -461,9 +471,9 @@ def render_strategy_b1_tab():
     )
 
     # ===== Strategy info =====
-    with st.expander("ℹ️ About Strategy B1"):
+    with st.expander("ℹ️ About Trend strategy"):
         st.markdown("""
-**Strategy B1: EMA Crossover + BTC Local High**
+**Trend strategy — EMA Crossover + BTC Local High**
 
 **Entry conditions:**
 1. EMA35_4H crossed above EMA200_4H within the last 5 bars (fresh golden cross)
@@ -495,7 +505,7 @@ def render_strategy_b1_tab():
     sub1, sub2, sub3, sub4 = st.tabs([
         "📋 Watchlist",
         "🔍 Symbol detail",
-        "🔬 B1 Backtest",
+        "🔬 Backtest",
         "🔥 Sector heatmap",
     ])
 
@@ -627,7 +637,7 @@ def render_strategy_b1_tab():
     # ----- Sub-tab 3: B1 Backtest -----
     with sub3:
         st.markdown(
-            "Per-symbol historical backtest of Strategy B1. "
+            "Per-symbol historical backtest of the Trend strategy. "
             "Walks through all history, opens trades on every cross + BTC regime match, "
             "exits via stop/target/trail."
         )
@@ -638,7 +648,7 @@ def render_strategy_b1_tab():
         if b1_df.empty:
             st.info("No data for heatmap.")
         else:
-            st.markdown("**B1 Signal heat across sectors** — where crossovers are forming right now.")
+            st.markdown("**Trend signal heat across sectors** — where crossovers are forming right now.")
             # Reuse the existing heatmap renderer, passing B1 tier data
             render_sector_heatmap(b1_df, UNIVERSE)
 
@@ -657,8 +667,8 @@ def main():
     except Exception as e:
         st.sidebar.caption(f"⚠ Snapshot write failed: {type(e).__name__}")
 
-    # Header & regime (always visible at the top)
-    render_header(regime)
+    # Header title + refresh button (always visible at top)
+    render_title(regime)
 
     # Sidebar filters (always visible, used by Watchlist tab)
     with st.sidebar:
@@ -684,30 +694,37 @@ def main():
             age = (datetime.now(regime["as_of"].tz) - regime["as_of"]).total_seconds() / 3600
             st.caption(f"Data age: {age:.1f}h")
 
-    st.divider()
-
     # ============================================================
-    # Three top-level tabs
+    # Top-level: STRATEGY SWITCHER
+    # Each top-level tab is a complete strategy with its own sub-tabs
     # ============================================================
-    top1, top2, top3, top4 = st.tabs([
-        "📋 Watchlist & Scan",
-        "🔬 Strategy backtest",
-        "🔥 Sector signals heatmap",
-        "🚀 Strategy B1 (BTC local high)",
+    strat_vcp, strat_b1 = st.tabs([
+        "🔄 Reversal",
+        "📈 Trend",
     ])
 
     # ------------------------------------------------------------
-    # TAB 1 — Watchlist & Scan (current functionality)
+    # STRATEGY 1 — VCP-EMA-Stack
     # ------------------------------------------------------------
-    with top1:
+    with strat_vcp:
+        # VCP regime banner
+        render_vcp_regime(regime)
+        st.divider()
+
         # Tier summary cards
         render_tier_summary(scan_df, regime["active"])
         st.divider()
 
-        # Inner tabs for the watchlist content
-        inner1, inner2, inner3 = st.tabs(["📋 Watchlist", "🔍 Symbol detail", "📊 Portfolio backtest"])
+        # Sub-tabs for VCP strategy views
+        vcp_tab1, vcp_tab2, vcp_tab3, vcp_tab4, vcp_tab5 = st.tabs([
+            "📋 Watchlist",
+            "🔍 Symbol detail",
+            "📊 Portfolio backtest",
+            "🔬 Strategy backtest",
+            "🔥 Sector heatmap",
+        ])
 
-        with inner1:
+        with vcp_tab1:
             df_view = render_watchlist(scan_df, sector_filter, tier_filter, min_score)
             if df_view is not None:
                 st.caption(
@@ -715,7 +732,7 @@ def main():
                     "Glyphs: ✓ pass · · fail. Sort by clicking column headers."
                 )
 
-        with inner2:
+        with vcp_tab2:
             sorted_df = scan_df.sort_values(["symbol_pass", "F1_base_60d"],
                                              ascending=[False, False])
             options = sorted_df["symbol"].tolist()
@@ -729,6 +746,7 @@ def main():
                     range(len(options)),
                     format_func=lambda i: display_options[i],
                     index=0,
+                    key="vcp_symbol_picker",
                 )
                 sym = options[choice]
                 row = scan_df[scan_df["symbol"] == sym].iloc[0]
@@ -736,30 +754,24 @@ def main():
             else:
                 st.info("No symbols available.")
 
-        with inner3:
+        with vcp_tab3:
             render_equity()
 
-    # ------------------------------------------------------------
-    # TAB 2 — Strategy backtest (per-symbol historical, VCP strategy)
-    # ------------------------------------------------------------
-    with top2:
-        st.subheader("VCP-EMA-Stack v1.2 — single symbol, full history")
-        render_symbol_backtest(DATA_DIR, UNIVERSE)
+        with vcp_tab4:
+            st.subheader("Reversal — per-symbol historical backtest")
+            render_symbol_backtest(DATA_DIR, UNIVERSE)
+
+        with vcp_tab5:
+            st.subheader("Sector heat — where setups are concentrated right now")
+            render_sector_heatmap(scan_df, UNIVERSE)
+            st.divider()
+            st.subheader("📜 Signal history")
+            render_history(SNAPSHOTS_DIR, DATA_DIR, UNIVERSE)
 
     # ------------------------------------------------------------
-    # TAB 3 — Sector signals heatmap + history
+    # STRATEGY 2 — B1 (EMA Crossover + BTC Local High)
     # ------------------------------------------------------------
-    with top3:
-        st.subheader("Sector heat — where setups are concentrated right now")
-        render_sector_heatmap(scan_df, UNIVERSE)
-        st.divider()
-        st.subheader("📜 Signal history")
-        render_history(SNAPSHOTS_DIR, DATA_DIR, UNIVERSE)
-
-    # ------------------------------------------------------------
-    # TAB 4 — Strategy B1: EMA Crossover + BTC Local High
-    # ------------------------------------------------------------
-    with top4:
+    with strat_b1:
         render_strategy_b1_tab()
 
 
