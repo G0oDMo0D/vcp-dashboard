@@ -205,7 +205,7 @@ def render_chart(sig: pd.DataFrame, trades: pd.DataFrame, missed: list[dict],
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         row_heights=[0.78, 0.22], vertical_spacing=0.03,
-        subplot_titles=(f"{symbol_display} — B1 strategy backtest (4H)", "Volume"),
+        subplot_titles=(f"{symbol_display} — Trend strategy backtest (4H)", "Volume"),
     )
 
     fig.add_trace(go.Candlestick(
@@ -318,7 +318,7 @@ def _cached_simulate(symbol: str, data_dir: str, use_regime: bool):
 def render_symbol_backtest(data_dir: str, universe: dict):
     """Main render function — to be called from app.py."""
     st.markdown(
-        "Backtest Strategy B1 (EMA crossover + BTC near 90d local high) on a single symbol. "
+        "Backtest the Trend strategy (EMA crossover + BTC near 90d local high) on a single symbol. "
         "**Diagnostic mode** — fixed $10k risk per trade, no portfolio constraints."
     )
 
@@ -343,7 +343,7 @@ def render_symbol_backtest(data_dir: str, universe: dict):
                  "Useful to see how many setups are filtered out.",
         )
 
-    with st.spinner(f"Running B1 backtest on {sym}..."):
+    with st.spinner(f"Running Trend backtest on {sym}..."):
         result = _cached_simulate(sym, data_dir, use_regime)
 
     if result is None:
@@ -356,7 +356,7 @@ def render_symbol_backtest(data_dir: str, universe: dict):
 
     if trades.empty:
         st.info(
-            f"No B1 trades on {sym} over its full history. "
+            f"No Trend trades on {sym} over its full history. "
             "Either no crossovers happened, or all were filtered by BTC regime."
         )
         render_chart(sig, trades, missed, universe[sym][0], show_missed=bool(missed))
