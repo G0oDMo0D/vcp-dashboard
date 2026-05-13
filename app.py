@@ -1,4 +1,4 @@
-"""
+="""
 VCP-EMA-Stack Dashboard
 
 Web UI for monitoring strategy signals across the configured universe.
@@ -22,6 +22,10 @@ from universe import UNIVERSE, SECTORS
 from heatmap import render_sector_heatmap
 from history import save_snapshot, render_history
 from symbol_backtest import render_symbol_backtest
+
+# Strategy B1 (EMA crossover + BTC local high)
+import strategy_b1 as b1
+from strategy_b1_backtest import render_symbol_backtest as render_b1_symbol_backtest
 
 # ============================================================
 # Configuration
@@ -408,6 +412,238 @@ def render_equity():
 
 
 # ============================================================
+# Strategy B1 — render function
+# ============================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_b1_scan(data_dir: str):
+    """Cache B1 scan results for 5 minutes."""
+    return b1.scan_all(data_dir, list(UNIVERSE.keys()))
+
+
+def render_strategy_b1_tab():
+    """Render the Strategy B1 dashboard tab.
+
+    Strategy: EMA35×EMA200 golden cross + BTC near 90d local high.
+    Backtest: WR 70.8% (n=89, CI [62%, 80%]).
+    """
+    with st.spinner("Computing B1 signals..."):
+        b1_df, b1_regime = _cached_b1_scan(DATA_DIR)
+
+    # ===== Regime status banner =====
+    if b1_regime.get("regime_active"):
+        days = b1_regime.get("days_since_local_high", 0)
+        st.success(
+            f"✅ **B1 STRATEGY ACTIVE** — BTC made new 90d local high "
+            f"{days:.1f} days ago. Tier-A signals are tradable."
+        )
+    else:
+        days = b1_regime.get("days_since_local_high", 0)
+        dd = b1_regime.get("btc_dd_from_local_high", 0)
+        st.warning(
+            f"⏸ **B1 STRATEGY PAUSED** — BTC last 90d local high was "
+            f"**{days:.0f} days** ago (need ≤7). Currently {dd:+.1%} from local high. "
+            f"Setups stay on watchlist but don't trigger entries."
+        )
+
+    # ===== Regime metrics =====
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("BTC price", f"${b1_regime.get('btc_price', 0):,.0f}")
+    c2.metric("BTC 90d local high", f"${b1_regime.get('btc_local_high_90d', 0):,.0f}")
+    c3.metric(
+        "BTC vs local high",
+        f"{b1_regime.get('btc_dd_from_local_high', 0):+.1%}",
+    )
+    c4.metric(
+        "Days since new local high",
+        f"{b1_regime.get('days_since_local_high', 0):.1f}",
+        delta=f"{(7 - b1_regime.get('days_since_local_high', 0)):.1f}d to gate close",
+        delta_color="normal",
+    )
+
+    # ===== Strategy info =====
+    with st.expander("ℹ️ About Strategy B1"):
+        st.markdown("""
+**Strategy B1: EMA Crossover + BTC Local High**
+
+**Entry conditions:**
+1. EMA35_4H crossed above EMA200_4H within the last 5 bars (fresh golden cross)
+2. BTC made a new 90-day local high within the last 7 days (regime gate)
+3. R-target between 1.5 and 6 (computed from 2.5×ATR stop and 1:3 target)
+
+**Exit:**
+- Hard stop at 2.5×ATR14 below entry (catastrophic loss protection)
+- 50% off at 1:3 target, then chandelier trail (2.5×ATR) on remainder
+- Time stop: 60 bars max
+
+**Historical performance (89 events, 2024-2025):**
+- Win rate: 70.8%
+- Median 14d return: +11.3%
+- 95% CI on win rate: [61.8%, 79.8%]
+- Best sector: L1 (WR 82%, n=45)
+- Worst sector: Meme (WR 40%), Oracle (WR 50%)
+
+**Known caveats:**
+- Half of edge concentrates in Q4 2024 BTC rally — sample skew risk
+- Q4 2025 showed bull-trap behavior: WR dropped to 10% (n=10)
+- Strategy currently has 0 events in 2026 (BTC hasn't made new local highs)
+- Sensitive to local-high window: 30d gives WR 47%, 90d gives 71% (p-hacking risk)
+""")
+
+    st.divider()
+
+    # ===== Inner tabs =====
+    sub1, sub2, sub3, sub4 = st.tabs([
+        "📋 Watchlist",
+        "🔍 Symbol detail",
+        "🔬 B1 Backtest",
+        "🔥 Sector heatmap",
+    ])
+
+    # ----- Sub-tab 1: Watchlist -----
+    with sub1:
+        if b1_df.empty:
+            st.info("No symbols evaluated.")
+        else:
+            # Tier counts
+            t_a   = (b1_df["tier"] == "A").sum()
+            t_ap  = (b1_df["tier"] == "A_pending_regime").sum()
+            t_b   = (b1_df["tier"] == "B").sum()
+            t_c   = (b1_df["tier"] == "C").sum()
+
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("Tier A — Actionable", t_a, help="Fresh cross + BTC regime ok")
+            cc2.metric("A pending regime",   t_ap, help="Fresh cross, BTC regime off")
+            cc3.metric("Tier B — In trend",  t_b,  help="EMA35>EMA200 but cross was >5 bars ago")
+            cc4.metric("Tier C — Below",     t_c,  help="EMA35>EMA200 but cross was long ago")
+
+            st.markdown("---")
+            tier_filter_b1 = st.multiselect(
+                "Filter by tier",
+                options=["A", "A_pending_regime", "B", "C", "D"],
+                default=["A", "A_pending_regime", "B"],
+                key="b1_tier_filter",
+            )
+            view = b1_df[b1_df["tier"].isin(tier_filter_b1)].copy() if tier_filter_b1 else b1_df.copy()
+            view["display"] = view["symbol"].apply(lambda s: UNIVERSE.get(s, (s, "?"))[0])
+            view["sector"]  = view["symbol"].apply(lambda s: UNIVERSE.get(s, (s, "?"))[1])
+
+            # Format for display
+            view_disp = pd.DataFrame({
+                "Symbol":      view["display"],
+                "Sector":      view["sector"],
+                "Tier":        view["tier"],
+                "Price":       view["price"].map(lambda x: f"${x:.4g}"),
+                "EMA35":       view["ema35"].map(lambda x: f"${x:.4g}"),
+                "EMA200":      view["ema200"].map(lambda x: f"${x:.4g}"),
+                "Cross aligned": view["cross_aligned"].map({True: "✓", False: "·"}),
+                "Bars since cross": view["bars_since_cross"].apply(
+                    lambda x: f"{int(x)}" if pd.notna(x) else "—"
+                ),
+                "Stop":        view["stop"].map(lambda x: f"${x:.4g}" if pd.notna(x) else "—"),
+                "Target":      view["target"].map(lambda x: f"${x:.4g}" if pd.notna(x) else "—"),
+                "R":           view["R_target"].map(lambda x: f"{x:.2f}"),
+            })
+            # Sort by tier rank
+            tier_rank = {"A": 0, "A_pending_regime": 1, "B": 2, "C": 3, "D": 4}
+            view_disp["_rank"] = view["tier"].map(tier_rank)
+            view_disp = view_disp.sort_values("_rank").drop(columns=["_rank"])
+            st.dataframe(view_disp, hide_index=True, use_container_width=True)
+            st.caption(
+                f"Showing {len(view_disp)} of {len(b1_df)} symbols. "
+                "Tiers: A = fresh cross + BTC regime, A* = cross ok / BTC off, "
+                "B = aligned but cross >5 bars ago, C = aligned but old, D = below."
+            )
+
+    # ----- Sub-tab 2: Symbol detail -----
+    with sub2:
+        if b1_df.empty:
+            st.info("No symbols available.")
+        else:
+            # Sort by tier rank, then by bars_since_cross
+            tier_rank = {"A": 0, "A_pending_regime": 1, "B": 2, "C": 3, "D": 4}
+            b1_sorted = b1_df.copy()
+            b1_sorted["_rank"] = b1_sorted["tier"].map(tier_rank)
+            b1_sorted = b1_sorted.sort_values(["_rank", "bars_since_cross"], na_position="last")
+            options = b1_sorted["symbol"].tolist()
+            display_options = [
+                f"{UNIVERSE.get(s,(s,'?'))[0]} ({s}) — {r['tier']}, "
+                f"bars since cross: {int(r['bars_since_cross']) if pd.notna(r['bars_since_cross']) else '—'}"
+                for s, r in zip(options, b1_sorted.to_dict("records"))
+            ]
+            choice = st.selectbox(
+                "Select symbol",
+                range(len(options)),
+                format_func=lambda i: display_options[i],
+                key="b1_detail_picker",
+            )
+            sym = options[choice]
+            row = b1_df[b1_df["symbol"] == sym].iloc[0]
+
+            # Summary metrics
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("Tier",        row["tier"])
+            cc2.metric("Price",       f"${row['price']:.4g}")
+            cc3.metric("EMA35/EMA200 spread", f"{row['ema_spread_pct']*100:.1f}%")
+            cc4.metric("R target",    f"{row['R_target']:.2f}")
+
+            cc5, cc6, cc7, cc8 = st.columns(4)
+            cc5.metric("Stop",        f"${row['stop']:.4g}")
+            cc6.metric("Target",      f"${row['target']:.4g}")
+            cc7.metric("Risk %",      f"{(row['price']/row['stop']-1)*100:.1f}%")
+            cc8.metric("Bars since cross",
+                       f"{int(row['bars_since_cross']) if pd.notna(row['bars_since_cross']) else '—'}")
+
+            # Conditions check
+            st.markdown("**Entry conditions:**")
+            checks = [
+                ("EMA35 > EMA200 (cross aligned)", row["cross_aligned"]),
+                ("Recent cross (≤5 bars)",         row["cross_active"]),
+                ("BTC regime active (<7d since 90d high)", row["btc_regime_active"]),
+                ("R target in [1.5, 6.0]",         row["R_ok"]),
+            ]
+            for label, ok in checks:
+                glyph = "✅" if ok else "❌"
+                st.markdown(f"- {glyph} {label}")
+
+            # Action recommendation
+            if row["tier"] == "A":
+                st.success(
+                    f"**🚀 TRADABLE — Tier A.** Entry on next bar at market. "
+                    f"Stop at ${row['stop']:.4g}, target at ${row['target']:.4g}, R = {row['R_target']:.2f}."
+                )
+            elif row["tier"] == "A_pending_regime":
+                st.warning(
+                    "**⏸ Watch only — A pending regime.** Setup is ready but BTC has not "
+                    "made a new 90d local high within 7 days. Wait for BTC regime to activate."
+                )
+            elif row["tier"] == "B":
+                st.info(
+                    "**👀 Already in trend — Tier B.** Crossover happened more than 5 bars ago. "
+                    "Don't chase — wait for next pullback or new cross."
+                )
+            else:
+                st.info(f"**Tier {row['tier']}** — not actionable.")
+
+    # ----- Sub-tab 3: B1 Backtest -----
+    with sub3:
+        st.markdown(
+            "Per-symbol historical backtest of Strategy B1. "
+            "Walks through all history, opens trades on every cross + BTC regime match, "
+            "exits via stop/target/trail."
+        )
+        render_b1_symbol_backtest(DATA_DIR, UNIVERSE)
+
+    # ----- Sub-tab 4: Sector heatmap (B1-specific) -----
+    with sub4:
+        if b1_df.empty:
+            st.info("No data for heatmap.")
+        else:
+            st.markdown("**B1 Signal heat across sectors** — where crossovers are forming right now.")
+            # Reuse the existing heatmap renderer, passing B1 tier data
+            render_sector_heatmap(b1_df, UNIVERSE)
+
+
+# ============================================================
 # Main app flow
 # ============================================================
 def main():
@@ -453,10 +689,11 @@ def main():
     # ============================================================
     # Three top-level tabs
     # ============================================================
-    top1, top2, top3 = st.tabs([
+    top1, top2, top3, top4 = st.tabs([
         "📋 Watchlist & Scan",
         "🔬 Strategy backtest",
         "🔥 Sector signals heatmap",
+        "🚀 Strategy B1 (BTC local high)",
     ])
 
     # ------------------------------------------------------------
@@ -503,10 +740,10 @@ def main():
             render_equity()
 
     # ------------------------------------------------------------
-    # TAB 2 — Strategy backtest (per-symbol historical)
+    # TAB 2 — Strategy backtest (per-symbol historical, VCP strategy)
     # ------------------------------------------------------------
     with top2:
-        st.subheader("Strategy backtest — single symbol, full history")
+        st.subheader("VCP-EMA-Stack v1.2 — single symbol, full history")
         render_symbol_backtest(DATA_DIR, UNIVERSE)
 
     # ------------------------------------------------------------
@@ -518,6 +755,12 @@ def main():
         st.divider()
         st.subheader("📜 Signal history")
         render_history(SNAPSHOTS_DIR, DATA_DIR, UNIVERSE)
+
+    # ------------------------------------------------------------
+    # TAB 4 — Strategy B1: EMA Crossover + BTC Local High
+    # ------------------------------------------------------------
+    with top4:
+        render_strategy_b1_tab()
 
 
 if __name__ == "__main__" or True:  # streamlit runs scripts top-level
